@@ -19,7 +19,6 @@ namespace QC{
 			_ptr = ptr._ptr;
 			return *this;
 		}
-		
 		virtual ~Ptr(){ decref(); }
 		T* ptr()const{ return _ptr; }
 		operator bool()const{ return _ptr? true : false; }
