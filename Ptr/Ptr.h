@@ -19,129 +19,94 @@ namespace QC{
 			_ptr = ptr._ptr;
 			return *this;
 		}
-		~Ptr(){ decref(); }
+		
+		virtual ~Ptr(){ decref(); }
+		T* ptr()const{ return _ptr; }
 		operator bool()const{ return _ptr? true : false; }
 		operator T*()const{ return (T*)_ptr; }
-		T* operator->(){ return _ptr; }
+		operator void*()const{ return _ptr; }
+		T* operator->()const{ return _ptr; }
 		bool operator ==(const Ptr& ptr)const{ return _ptr==ptr._ptr; }
 		bool operator !=(const Ptr& ptr)const{ return _ptr!=ptr._ptr; }
 	private:
 		void incref() const {
-			if( _ptr ){ _ptr->Retain(); }
+			if( _ptr ){ _ptr->_refc++; }
 		}
 		void decref(){
-			if( _ptr ){ _ptr = _ptr->template Release<T>(); }
+			if( _ptr && --_ptr->_refc==0 ){
+				_ptr->Dealloc();
+				_ptr = NULL;
+			}
 		}
 	};
 	
-	template<class> class WeakPtr;
+	class Obj;
+
+	class WObj{
+		int _refc;
+		Obj *_wptr;
+		friend class Obj;
+		template<class> friend class Ptr;
+		template<class> friend class WeakPtr;
+	public:
+		WObj():_refc(0), _wptr(NULL){}
+		WObj(Obj *ptr):_refc(0), _wptr(ptr){}
+		virtual ~WObj(){}
+		Obj*& Ptr(){ return _wptr; }
+		virtual void Dealloc(){
+			if( this ){ delete this; }
+		}
+	};
 	
 	class Obj{
 		int _refc;
-		int _weak;
+		Ptr<WObj> _wptr;
+		template<class> friend class Ptr;
 		template<class> friend class WeakPtr;
 	public:
-		Obj():_refc(0),_weak(0){}
-		virtual ~Obj(){}
-		int  RefC(){ return _refc; }
-		Obj* Retain(){ return (this && ++_refc)? this : NULL; }
-		template<class T> T* Release(){
-			if( this && --_refc==0 ){
-				if( _weak ){
-					WeakPtr<T>::Unreg((T*)this);
-				}
-				delete this;
-				return NULL;
-			}
-			return (T*)this;
+		Obj():_refc(0),_wptr(){}
+		virtual ~Obj(){
+			if( _wptr ){ _wptr->_wptr = NULL; }
+		}
+		virtual void Dealloc(){
+			if( this ){ delete this; }
 		}
 	};
 	
 	template <class T>
 	class WeakPtr{
-		friend class QC::Obj;
-		class WObj : public QC::Obj{
-		public:
-			T *_ptr;
-			WObj *_next;
-			WObj(T* ptr=NULL):_ptr(ptr),_next(NULL){
-				((Obj*)_ptr)->_weak = 1;
-			}
-			~WObj(){ Unreg(_ptr); }
-		};
-		Ptr<WObj> _ptr;
+		Ptr<WObj> _wptr;
 	public:
-		WeakPtr() : _ptr(){}
-		WeakPtr(T *ptr) : _ptr(Reg(ptr)){}
-		WeakPtr(const Ptr<T> &ptr) : _ptr(Reg(ptr)){}
+		WeakPtr() : _wptr(){}
+		WeakPtr(T *ptr) : _wptr(WPtr(ptr)){}
+		WeakPtr(const Ptr<T> &ptr) : _wptr(WPtr(ptr)){}
 		WeakPtr<T>& operator=(const Ptr<T>& ptr){
-			_ptr = Reg(ptr);
+			_wptr = WPtr(ptr);
 			return *this;
 		}
 		WeakPtr<T>& operator=(T *ptr){
-			_ptr = Reg(ptr);
+			_wptr = WPtr(ptr);
 			return *this;
 		}
-		operator bool()const{ return (_ptr&&_ptr._ptr)? true : false; }
-		operator T*(){ return (T*)(_ptr?_ptr->_ptr : NULL); }
-		T* operator->(){ return (T*)(_ptr?_ptr->_ptr : NULL); }
-		bool operator ==(const Ptr<T>& ptr)const{ return _ptr==ptr._ptr; }
-		bool operator !=(const Ptr<T>& ptr)const{ return _ptr!=ptr._ptr; }
+		operator const Ptr<T>()const{ return Ptr<T>(ptr()); }
+		T* ptr()const{ return _wptr? (T*)_wptr->_wptr : NULL; }
+		operator bool()const{ return ptr()? true : false; }
+		operator T*()const{ return (T*)ptr(); }
+		operator void*()const{ return ptr(); }
+		T* operator->()const{ return ptr(); }
+		bool operator ==(const Ptr<T>& ptr)const{
+			if( _wptr ){ return _wptr->_wptr==ptr; }
+			return ptr.ptr()==NULL;
+		}
+		bool operator !=(const Ptr<T>& ptr)const{
+			return !operator==(ptr);
+		}
 	private:
-		static const int N = 251;
-		static WObj** Table(){
-			static int init = 0;
-			static WObj* tbl[N];
-			if( !init ){
-				for(int i=0;i<N;i++){ tbl[i]=NULL; }
-				init = 1;
-			}
-			return tbl;
-		}
-		static Ptr<WObj> Reg(T* ptr){
-			if( !ptr ){ return NULL; }
-			WObj *obj = Get(ptr);
-			if( !obj ){
-				obj = new WObj(ptr);
-				WObj **item0 = Table()+(uintptr_t)ptr%N;
-				if( *item0 != NULL ){
-					WObj *item = *item0;
-					while(item->_next!=NULL){
-						item = item->_next;
-					}
-					item->_next = obj;
-				}else{
-					*item0 = obj;
-				}
-			}
-			return Ptr<WObj>(obj);
-		}
-		static void Unreg(T* ptr){
-			if( !ptr ){ return; }
-			WObj **item0 = Table()+(uintptr_t)ptr%N;
-			WObj *item = *item0;
-			WObj *prev = NULL;
-			while (item) {
-				if( item->_ptr == ptr ){
-					if( prev ){
-						prev->_next = item->_next;
-					}else{
-						*item0 = item->_next;
-					}
-					item->_ptr = NULL;
-					return;
-				}
-				prev = item;
-				item = item->_next;
-			}
-		}
-		static WObj* Get(T *ptr){
-			WObj *item = Table()[(uintptr_t)ptr%N];
-			while (item) {
-				if( item->_ptr==ptr ){ return item; }
-				item = item->_next;
-			}
-			return NULL;
+		Ptr<WObj> WPtr(T *ptr){
+			Obj *o = (Obj*)ptr;
+			if( !o ){ return NULL; }
+			else if( !o->_wptr ){ o->_wptr = new WObj(o); }
+			return o->_wptr;
 		}
 	};
 	
